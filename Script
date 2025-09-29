@@ -1,0 +1,128 @@
+from playwright.sync_api import sync_playwright, TimeoutError
+from datetime import datetime
+import time
+
+# --- CONFIG ---
+EXCEL_FILE = r"C:\Users\Mohan\OneDrive - AXCEND AUTOMATION AND SOFTWARE SOLUTIONS PVT LTD\Desktop\production_data.xlsx"
+URL = "http://192.168.1.102:8088/data/perspective/client/Copy_Of_EXCEL/Com"
+NEW_VALUE = "100"
+
+# --- CURRENT DATE ---
+today = datetime.now()
+day = today.day
+month_index = today.month - 1  # 0-based for month selection
+year = today.year
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=False, slow_mo=300)
+    context = browser.new_context(no_viewport=True)
+    page = context.new_page()
+
+    # === STEP 1: Go to Perspective view and select date ===
+    page.goto(URL)
+    page.wait_for_load_state("networkidle")
+
+    # Click Date-Time input to open calendar picker
+    datetime_input = page.locator('div[data-component="ia.input.date-time-input"] input')
+    datetime_input.wait_for(state="visible", timeout=10000)
+    datetime_input.click()
+    print("Opened Date-Time picker popup")
+
+    # Select Month & Year
+    month_select = page.locator('select').first
+    month_select.select_option(str(month_index))
+    year_select = page.locator('select').nth(1)
+    year_select.select_option(str(year))
+    print(f"Selected month {month_index + 1} and year {year}")
+
+    # Select Day
+    calendar_popup = page.locator('div[role="dialog"], div[class*="popup"], div[class*="DatePicker"]')
+    day_elements = calendar_popup.locator('*').filter(has_text=str(day))
+
+    day_clicked = False
+    for i in range(day_elements.count()):
+        elem = day_elements.nth(i)
+        if elem.is_visible():
+            elem.click(force=True)
+            print(f"Selected day {day}")
+            day_clicked = True
+            break
+
+    if not day_clicked:
+        print(f"Error: Could not find clickable element for day {day}")
+        browser.close()
+        exit(1)
+
+    print(f"Date selection completed: {month_index + 1}/{day}/{year}")
+    page.wait_for_timeout(1000)
+
+    # === STEP 2: Upload Excel File ===
+    page.locator("[data-component='ia.input.fileupload']").click()
+    file_input = page.locator("input[type='file']")
+    file_input.wait_for(state="attached", timeout=10000)
+    file_input.set_input_files(EXCEL_FILE)
+
+    # Wait for "Valid Table"
+    try:
+        page.wait_for_selector("text=Valid Table", timeout=15000)
+        print("Table validated successfully")
+    except TimeoutError:
+        print("Table did not become valid in time!")
+        browser.close()
+        exit(1)
+
+    page.reload()
+    page.wait_for_load_state("networkidle")
+
+    # === STEP 3: Edit all editable cells ===
+    try:
+        editors = page.locator("[data-component='ia.display.table'] input, [data-component='ia.display.table'] textarea")
+        count = editors.count()
+        if count == 0:
+            print("No editable cells found!")
+            browser.close()
+            exit(1)
+
+        for i in range(count):
+            cell = editors.nth(i)
+            cell.scroll_into_view_if_needed()
+            cell.fill(NEW_VALUE)
+            cell.press("Enter")
+            page.wait_for_timeout(50)
+        print(f"Updated {count} cells to {NEW_VALUE}")
+    except TimeoutError:
+        print("Error while editing cells!")
+        browser.close()
+        exit(1)
+
+    # === STEP 4: Safe multi-select dropdown selection ===
+    try:
+        dropdown = page.locator("div.ia_dropdown").first
+        dropdown.click(force=True)
+
+        option_texts = page.locator(".ia_dropdown__optionsModal .ia_dropdown__option").all_text_contents()
+        print(f"Found {len(option_texts)} options: {option_texts}")
+
+        for text in option_texts:
+            if not page.locator(".ia_dropdown__optionsModal").is_visible():
+                dropdown.click(force=True)
+            option = page.locator(".ia_dropdown__optionsModal .ia_dropdown__option", has_text=text)
+            option.click()
+            print(f"Selected: {text}")
+            page.wait_for_timeout(150)
+
+        page.keyboard.press("Escape")
+        print("Dropdown selection done")
+    except Exception as e:
+        print(f"Dropdown selection error: {e}")
+
+    # === STEP 5: Save ===
+    page.locator("text=SAVE").click()
+    try:
+        page.wait_for_selector("text=Upload completed successfully!", timeout=10000)
+        print("Save completed successfully!")
+    except TimeoutError:
+        print("Save confirmation not detected, check if save worked.")
+
+    page.wait_for_timeout(3000)
+    browser.close()
